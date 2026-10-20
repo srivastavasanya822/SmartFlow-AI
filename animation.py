@@ -123,7 +123,6 @@ def spawn_car(direction=None, emergency=None):
     })
     next_car_id += 1
 
-
 def signal_group(direction):
     return "NS" if direction in ("N", "S") else "EW"
 
