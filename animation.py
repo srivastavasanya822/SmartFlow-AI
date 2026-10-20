@@ -1,448 +1,520 @@
 
-import pygame
 import random
 import sys
+import pygame
 
-# --------------------------------------------------
-# SMARTFLOW AI - TRAFFIC SIMULATION
-# Standalone prototype; no external project files needed
-# --------------------------------------------------
+# ============================================================
+# SMARTFLOW AI - PERSON 1
+# Animated Traffic Intersection
+# Python 3.13 + Pygame
+# ============================================================
 
 pygame.init()
 
-WIDTH, HEIGHT = 1100, 760
-FPS = 30
+WIDTH = 1100
+HEIGHT = 760
+FPS = 60
 
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("SmartFlow AI | Intelligent Traffic Simulation")
+pygame.display.set_caption("SmartFlow AI - Intelligent Traffic Signal")
 clock = pygame.time.Clock()
 
-# Colors
-BG = (34, 95, 58)
-ROAD = (48, 51, 59)
-ROAD_LINE = (230, 230, 230)
+# Colours
 WHITE = (245, 245, 245)
-BLACK = (20, 22, 27)
-RED = (235, 55, 55)
-YELLOW = (255, 200, 35)
-GREEN = (45, 220, 105)
-BLUE = (55, 155, 255)
-ORANGE = (255, 135, 40)
-GREY = (125, 130, 140)
-PANEL = (24, 29, 38)
+BLACK = (20, 20, 20)
+ROAD = (48, 50, 54)
+DARK = (25, 28, 32)
+YELLOW = (255, 205, 40)
+GREEN = (40, 210, 100)
+RED = (240, 65, 65)
+BLUE = (55, 145, 255)
+ORANGE = (255, 145, 45)
+CYAN = (65, 220, 235)
 
-CX, CY = 550, 390
-ROAD_W = 280
+CENTER_X = WIDTH // 2
+CENTER_Y = 390
+ROAD_WIDTH = 260
 
-# Each direction has its own lane.
-# Progress runs from 0 (road entrance) to 1 (road exit).
-LANES = {
-    "N": (CX - 82, 0, 0, 1),
-    "S": (CX + 42, HEIGHT, 0, -1),
-    "W": (0, CY - 82, 1, 0),
-    "E": (WIDTH, CY + 42, -1, 0),
-}
+font_small = pygame.font.SysFont("arial", 16)
+font_medium = pygame.font.SysFont("arial", 20)
+font_large = pygame.font.SysFont("arial", 29, bold=True)
+font_title = pygame.font.SysFont("arial", 35, bold=True)
 
-# Approximate progress at the stop line for each approach.
-STOP_LINE = {
-    "N": (CY - ROAD_W / 2 - 22) / HEIGHT,
-    "S": (HEIGHT - (CY + ROAD_W / 2 + 22)) / HEIGHT,
-    "W": (CX - ROAD_W / 2 - 22) / WIDTH,
-    "E": (WIDTH - (CX + ROAD_W / 2 + 22)) / WIDTH,
-}
-
-phase = "NS_GREEN"
-phase_timer = 0.0
-sim_time = 0.0
-paused = False
-mode = "AI Demo"
-speed = 1
-spawn_timer = 0.0
-
-cars = []
-next_car_id = 0
-completed = 0
-emergency_served = 0
-total_wait = 0.0
-wait_samples = 0
-
-# Signal timing in simulated seconds
-GREEN_TIME = 8.0
+# Signal timing
+MIN_GREEN = 8.0
+MAX_GREEN = 18.0
 YELLOW_TIME = 2.0
 ALL_RED_TIME = 1.0
 
-# Emergency testing frequency. Lower to 0.12 for the final demo.
-EMERGENCY_PROBABILITY = 0.18
 
-# Vehicle dimensions and spacing
-CAR_LENGTH = 25
-MIN_GAP = 0.065
-MOVE_STEP = 0.0032
+# ============================================================
+# VEHICLE
+# ============================================================
 
+class Vehicle:
 
-def draw_text(text, x, y, size=20, color=WHITE):
-    font = pygame.font.SysFont("arial", size, bold=True)
-    surface = font.render(str(text), True, color)
-    screen.blit(surface, (x, y))
+    def __init__(self, direction, vehicle_id, emergency=False):
+        self.direction = direction
+        self.vehicle_id = vehicle_id
+        self.emergency = emergency
+        self.speed = random.uniform(1.4, 2.0)
+        self.crossed = False
 
+        self.color = ORANGE if emergency else random.choice([
+            BLUE, GREEN, RED, YELLOW, CYAN, WHITE
+        ])
 
-def reset():
-    global phase, phase_timer, sim_time, cars
-    global next_car_id, completed, emergency_served
-    global total_wait, wait_samples, spawn_timer
+        if direction == "N":
+            self.x = CENTER_X - 45
+            self.y = -35
+        elif direction == "S":
+            self.x = CENTER_X + 45
+            self.y = HEIGHT + 35
+        elif direction == "E":
+            self.x = WIDTH + 35
+            self.y = CENTER_Y + 45
+        else:  # W
+            self.x = -35
+            self.y = CENTER_Y - 45
 
-    phase = "NS_GREEN"
-    phase_timer = 0.0
-    sim_time = 0.0
-    cars = []
-    next_car_id = 0
-    completed = 0
-    emergency_served = 0
-    total_wait = 0.0
-    wait_samples = 0
-    spawn_timer = 0.0
+    def stop_coordinate(self):
+        if self.direction == "N":
+            return CENTER_Y - ROAD_WIDTH // 2 - 20
+        if self.direction == "S":
+            return CENTER_Y + ROAD_WIDTH // 2 + 20
+        if self.direction == "E":
+            return CENTER_X + ROAD_WIDTH // 2 + 20
+        return CENTER_X - ROAD_WIDTH // 2 - 20
 
+    def at_stop_line(self):
+        stop = self.stop_coordinate()
 
-def spawn_car(direction=None, emergency=None):
-    global next_car_id
+        if self.direction == "N":
+            return self.y >= stop
+        if self.direction == "S":
+            return self.y <= stop
+        if self.direction == "E":
+            return self.x <= stop
+        return self.x >= stop
 
-    if direction is None:
-        direction = random.choice(["N", "S", "E", "W"])
+    def update(self, green_directions, vehicles):
+        stop = self.stop_coordinate()
 
-    if emergency is None:
-        emergency = random.random() < EMERGENCY_PROBABILITY
+        # Stop at the signal when the light is red.
+        if not self.crossed and self.at_stop_line():
+            if self.direction not in green_directions:
+                return
+            self.crossed = True
 
-    # Each vehicle gets a stable identity and its own waiting counter.
-    cars.append({
-        "id": next_car_id,
-        "direction": direction,
-        "progress": 0.0,
-        "emergency": emergency,
-        "wait": 0.0,
-        "crossed_stop": False,
-    })
-    next_car_id += 1
+        # Simple same-lane following distance.
+        for other in vehicles:
+            if other is self or other.direction != self.direction:
+                continue
 
-def signal_group(direction):
-    return "NS" if direction in ("N", "S") else "EW"
+            if self.direction == "N":
+                if other.y > self.y and other.y - self.y < 43:
+                    return
+            elif self.direction == "S":
+                if other.y < self.y and self.y - other.y < 43:
+                    return
+            elif self.direction == "E":
+                if other.x < self.x and self.x - other.x < 43:
+                    return
+            elif self.direction == "W":
+                if other.x > self.x and other.x - self.x < 43:
+                    return
 
+        # Move the vehicle.
+        if self.direction == "N":
+            self.y += self.speed
+        elif self.direction == "S":
+            self.y -= self.speed
+        elif self.direction == "E":
+            self.x -= self.speed
+        else:
+            self.x += self.speed
 
-def green_for(direction):
-    group = signal_group(direction)
-    return phase == group + "_GREEN"
-
-
-def emergency_waiting():
-    # Only consider emergency vehicles that have not left the road.
-    # Priority logic below acts on the approach, not on a vehicle
-    # that has already exited the simulation.
-    candidates = [
-        car for car in cars
-        if car["emergency"] and car["progress"] < 1.0
-    ]
-    if not candidates:
-        return None
-
-    return min(candidates, key=lambda car: car["progress"])
-
-
-def change_phase():
-    global phase, phase_timer
-
-    phase_timer = 0.0
-
-    # Normal safe sequence: green -> yellow -> all-red -> other green.
-    if phase == "NS_GREEN":
-        phase = "NS_YELLOW"
-    elif phase == "NS_YELLOW":
-        phase = "ALL_RED_TO_EW"
-    elif phase == "ALL_RED_TO_EW":
-        phase = "EW_GREEN"
-    elif phase == "EW_GREEN":
-        phase = "EW_YELLOW"
-    elif phase == "EW_YELLOW":
-        phase = "ALL_RED_TO_NS"
-    elif phase == "ALL_RED_TO_NS":
-        phase = "NS_GREEN"
-
-
-def update_signal(dt):
-    global phase_timer, phase
-
-    phase_timer += dt
-
-    # Fixed mode uses the regular signal cycle.
-    if mode == "Fixed":
-        duration = (
-            YELLOW_TIME if phase.endswith("YELLOW")
-            else ALL_RED_TIME if phase.startswith("ALL_RED")
-            else GREEN_TIME
+    def outside_screen(self):
+        margin = 80
+        return (
+            self.x < -margin or self.x > WIDTH + margin
+            or self.y < -margin or self.y > HEIGHT + margin
         )
-        if phase_timer >= duration:
-            change_phase()
-        return
 
-    # AI demo mode: request emergency priority when one is waiting.
-    emergency = emergency_waiting()
+    def draw(self, surface):
+        # Vehicle body
+        if self.direction in ("N", "S"):
+            rect = pygame.Rect(
+                int(self.x - 12), int(self.y - 18), 24, 36
+            )
+        else:
+            rect = pygame.Rect(
+                int(self.x - 18), int(self.y - 12), 36, 24
+            )
 
-    if emergency is not None:
-        wanted = signal_group(emergency["direction"]) + "_GREEN"
+        pygame.draw.rect(surface, self.color, rect, border_radius=5)
 
-        # Never jump directly from one green to the other.
-        if phase in ("NS_GREEN", "EW_GREEN"):
-            current_group = phase[:2]
-            if current_group != signal_group(emergency["direction"]):
-                change_phase()
+        # Windows
+        if self.direction in ("N", "S"):
+            window = pygame.Rect(rect.x + 4, rect.y + 7, 16, 9)
+        else:
+            window = pygame.Rect(rect.x + 7, rect.y + 4, 9, 16)
+
+        pygame.draw.rect(surface, DARK, window, border_radius=2)
+
+        # Emergency marking
+        if self.emergency:
+            pygame.draw.circle(
+                surface, WHITE, (int(self.x), int(self.y)), 4
+            )
+
+
+# ============================================================
+# TRAFFIC SIMULATION
+# ============================================================
+
+class TrafficSimulation:
+
+    def __init__(self):
+        self.vehicles = []
+        self.next_id = 1
+
+        self.elapsed = 0.0
+        self.spawn_timer = 0.0
+        self.phase_timer = 0.0
+
+        self.phase = "NS_GREEN"
+        self.last_green_was_ns = True
+
+        self.paused = False
+        self.fixed_mode = False
+
+        self.emergency_requested = False
+        self.emergency_direction = "N"
+        self.emergency_spawned = False
+
+        self.total_spawned = 0
+        self.total_passed = 0
+        self.phase_changes = 0
+
+        self.queues = {"N": 0, "S": 0, "E": 0, "W": 0}
+        self.waiting_seconds = {"N": 0.0, "S": 0.0, "E": 0.0, "W": 0.0}
+
+        for _ in range(8):
+            self.spawn_vehicle()
+
+    def spawn_vehicle(self, direction=None, emergency=False):
+        if direction is None:
+            direction = random.choice(["N", "S", "E", "W"])
+
+        vehicle = Vehicle(direction, self.next_id, emergency)
+        self.next_id += 1
+        self.vehicles.append(vehicle)
+        self.total_spawned += 1
+
+    def request_emergency(self):
+        if self.emergency_requested:
+            return
+
+        self.emergency_requested = True
+        self.emergency_spawned = False
+        self.emergency_direction = random.choice(["N", "S", "E", "W"])
+
+    def green_directions(self):
+        if self.phase == "NS_GREEN":
+            return ["N", "S"]
+        if self.phase == "EW_GREEN":
+            return ["E", "W"]
+        return []
+
+    def calculate_queues(self):
+        counts = {"N": 0, "S": 0, "E": 0, "W": 0}
+
+        for vehicle in self.vehicles:
+            if not vehicle.crossed and vehicle.at_stop_line():
+                counts[vehicle.direction] += 1
+
+        self.queues = counts
+
+    def change_to_yellow(self):
+        self.phase = "YELLOW"
+        self.phase_timer = 0.0
+        self.phase_changes += 1
+
+    def update_signal(self, dt):
+        self.phase_timer += dt
+
+        if self.phase in ("NS_GREEN", "EW_GREEN"):
+            green = self.green_directions()
+
+            emergency_needs_green = (
+                self.emergency_requested
+                and self.emergency_direction not in green
+            )
+
+            if self.fixed_mode:
+                if self.phase_timer >= 10:
+                    self.change_to_yellow()
                 return
 
-        elif phase in ("NS_YELLOW", "EW_YELLOW"):
-            if phase_timer >= YELLOW_TIME:
-                phase = (
-                    "ALL_RED_TO_EW" if phase == "NS_YELLOW"
-                    else "ALL_RED_TO_NS"
-                )
-                phase_timer = 0.0
-            return
+            self.calculate_queues()
 
-        elif phase.startswith("ALL_RED"):
-            if phase_timer >= ALL_RED_TIME:
-                phase = wanted
-                phase_timer = 0.0
-            return
+            ns_queue = self.queues["N"] + self.queues["S"]
+            ew_queue = self.queues["E"] + self.queues["W"]
 
-    duration = (
-        YELLOW_TIME if phase.endswith("YELLOW")
-        else ALL_RED_TIME if phase.startswith("ALL_RED")
-        else GREEN_TIME
-    )
+            should_switch = False
 
-    if phase_timer >= duration:
-        change_phase()
+            if emergency_needs_green and self.phase_timer >= MIN_GREEN:
+                should_switch = True
+            elif self.phase_timer >= MAX_GREEN:
+                should_switch = True
+            elif self.phase_timer >= MIN_GREEN:
+                if self.phase == "NS_GREEN" and ew_queue > ns_queue + 2:
+                    should_switch = True
+                elif self.phase == "EW_GREEN" and ns_queue > ew_queue + 2:
+                    should_switch = True
 
+            if should_switch:
+                self.change_to_yellow()
 
-def update_vehicles(dt):
-    global completed, emergency_served, total_wait, wait_samples
+        elif self.phase == "YELLOW":
+            if self.phase_timer >= YELLOW_TIME:
+                self.phase = "ALL_RED"
+                self.phase_timer = 0.0
 
-    # Generate vehicles at a controlled rate.
-    global spawn_timer
-    spawn_timer += dt
-
-    spawn_interval = 1.4 if mode == "AI Demo" else 1.8
-    if spawn_timer >= spawn_interval:
-        spawn_timer = 0.0
-        spawn_car()
-
-    # Process each approach independently, front vehicle first.
-    for direction in ("N", "S", "E", "W"):
-        lane_cars = [
-            car for car in cars
-            if car["direction"] == direction
-        ]
-
-        lane_cars.sort(
-            key=lambda car: car["progress"],
-            reverse=True
-        )
-
-        front_position = None
-        stop = STOP_LINE[direction]
-
-        for car in lane_cars:
-            progress = car["progress"]
-            step = MOVE_STEP * speed
-
-            # Determine whether this vehicle may enter the junction.
-            green = green_for(direction)
-
-            # Vehicles already past their stop line may clear the
-            # junction. A red signal blocks new entries.
-            if not car["crossed_stop"]:
-                if green and progress + step >= stop:
-                    car["progress"] = min(stop + step, 1.0)
-                    car["crossed_stop"] = True
-                elif green:
-                    car["progress"] = min(progress + step, stop)
-                elif progress + step < stop:
-                    car["progress"] = progress + step
+        elif self.phase == "ALL_RED":
+            if self.phase_timer >= ALL_RED_TIME:
+                if self.emergency_requested:
+                    if self.emergency_direction in ("N", "S"):
+                        self.phase = "NS_GREEN"
+                    else:
+                        self.phase = "EW_GREEN"
+                    self.emergency_requested = False
                 else:
-                    car["progress"] = min(progress, stop - 0.002)
-                    car["wait"] += dt
-                    total_wait += dt
-                    wait_samples += 1
-            else:
-                car["progress"] = min(1.0, progress + step)
+                    if self.last_green_was_ns:
+                        self.phase = "EW_GREEN"
+                    else:
+                        self.phase = "NS_GREEN"
 
-            # Enforce spacing behind the vehicle in front.
-            # If there is not enough space, this vehicle stays behind.
-            if front_position is not None:
-                max_progress = front_position - MIN_GAP
-                if car["progress"] > max_progress:
-                    car["progress"] = max_progress
-                    car["wait"] += dt
+                self.last_green_was_ns = (self.phase == "NS_GREEN")
+                self.phase_timer = 0.0
 
-            front_position = car["progress"]
+    def reset(self):
+        fixed = self.fixed_mode
+        self.__init__()
+        self.fixed_mode = fixed
 
-    # Remove vehicles that have completed their journey.
-    for car in cars[:]:
-        if car["progress"] >= 0.999:
-            cars.remove(car)
-            completed += 1
-            if car["emergency"]:
-                emergency_served += 1
+    def update(self, dt):
+        if self.paused:
+            return
+
+        self.elapsed += dt
+        self.spawn_timer += dt
+
+        # Spawn normal traffic.
+        if self.spawn_timer >= 1.3:
+            self.spawn_timer = 0.0
+            self.spawn_vehicle()
+
+            if random.random() < 0.25:
+                self.spawn_vehicle()
+
+        # Spawn one emergency vehicle per request.
+        if self.emergency_requested and not self.emergency_spawned:
+            self.spawn_vehicle(
+                direction=self.emergency_direction,
+                emergency=True
+            )
+            self.emergency_spawned = True
+
+        # Signal changes happen in one place only.
+        self.update_signal(dt)
+
+        green = self.green_directions()
+
+        for vehicle in list(self.vehicles):
+            vehicle.update(green, self.vehicles)
+
+            if vehicle.outside_screen():
+                self.vehicles.remove(vehicle)
+                if vehicle.crossed:
+                    self.total_passed += 1
+
+        self.calculate_queues()
+
+        # Approximate cumulative queue waiting.
+        for direction in ("N", "S", "E", "W"):
+            if direction not in green:
+                self.waiting_seconds[direction] += self.queues[direction] * dt
 
 
-def vehicle_position(car):
-    direction = car["direction"]
-    progress = car["progress"]
-    x0, y0, dx, dy = LANES[direction]
-
-    if direction == "N":
-        return int(x0), int(progress * HEIGHT)
-    if direction == "S":
-        return int(x0), int(HEIGHT - progress * HEIGHT)
-    if direction == "W":
-        return int(progress * WIDTH), int(y0)
-    return int(WIDTH - progress * WIDTH), int(y0)
-
+# ============================================================
+# DRAWING FUNCTIONS
+# ============================================================
 
 def draw_road():
-    screen.fill(BG)
+    screen.fill((32, 105, 68))
 
+    # Main roads
     pygame.draw.rect(
         screen, ROAD,
-        (CX - ROAD_W // 2, 0, ROAD_W, HEIGHT)
+        (0, CENTER_Y - ROAD_WIDTH // 2, WIDTH, ROAD_WIDTH)
     )
     pygame.draw.rect(
         screen, ROAD,
-        (0, CY - ROAD_W // 2, WIDTH, ROAD_W)
+        (CENTER_X - ROAD_WIDTH // 2, 0, ROAD_WIDTH, HEIGHT)
     )
 
-    # Lane markings
-    for y in range(0, HEIGHT, 42):
-        pygame.draw.line(
-            screen, ROAD_LINE,
-            (CX, y), (CX, y + 20), 2
-        )
+    # Road boundaries
+    pygame.draw.line(
+        screen, WHITE,
+        (0, CENTER_Y - ROAD_WIDTH // 2),
+        (WIDTH, CENTER_Y - ROAD_WIDTH // 2), 3
+    )
+    pygame.draw.line(
+        screen, WHITE,
+        (0, CENTER_Y + ROAD_WIDTH // 2),
+        (WIDTH, CENTER_Y + ROAD_WIDTH // 2), 3
+    )
+    pygame.draw.line(
+        screen, WHITE,
+        (CENTER_X - ROAD_WIDTH // 2, 0),
+        (CENTER_X - ROAD_WIDTH // 2, HEIGHT), 3
+    )
+    pygame.draw.line(
+        screen, WHITE,
+        (CENTER_X + ROAD_WIDTH // 2, 0),
+        (CENTER_X + ROAD_WIDTH // 2, HEIGHT), 3
+    )
 
+    # Dashed lane markings outside the junction
     for x in range(0, WIDTH, 42):
-        pygame.draw.line(
-            screen, ROAD_LINE,
-            (x, CY), (x + 20, CY), 2
+        if not CENTER_X - 145 <= x <= CENTER_X + 145:
+            pygame.draw.line(
+                screen, YELLOW,
+                (x, CENTER_Y), (x + 20, CENTER_Y), 2
+            )
+
+    for y in range(0, HEIGHT, 42):
+        if not CENTER_Y - 145 <= y <= CENTER_Y + 145:
+            pygame.draw.line(
+                screen, YELLOW,
+                (CENTER_X, y), (CENTER_X, y + 20), 2
+            )
+
+
+def draw_signal(x, y, direction, simulation):
+    pygame.draw.rect(
+        screen, DARK, (x, y, 42, 112), border_radius=8
+    )
+
+    active = simulation.phase
+    if active == "YELLOW":
+        active_colour = YELLOW
+    elif active == "ALL_RED":
+        active_colour = RED
+    elif direction in simulation.green_directions():
+        active_colour = GREEN
+    else:
+        active_colour = RED
+
+    colours = [RED, YELLOW, GREEN]
+    positions = [(x + 21, y + 20), (x + 21, y + 55), (x + 21, y + 90)]
+
+    for colour, position in zip(colours, positions):
+        lamp_colour = colour if colour == active_colour else (55, 55, 55)
+        pygame.draw.circle(screen, lamp_colour, position, 12)
+
+    label = font_small.render(direction, True, WHITE)
+    screen.blit(label, (x + 14, y + 114))
+
+
+def draw_dashboard(simulation):
+    panel = pygame.Rect(15, 15, 335, 195)
+    pygame.draw.rect(screen, DARK, panel, border_radius=12)
+    pygame.draw.rect(screen, CYAN, panel, 2, border_radius=12)
+
+    screen.blit(
+        font_large.render("SMARTFLOW AI", True, CYAN), (30, 24)
+    )
+
+    mode = "FIXED-TIME MODE" if simulation.fixed_mode else "ADAPTIVE DEMO MODE"
+    screen.blit(font_small.render(mode, True, YELLOW), (30, 61))
+
+    screen.blit(
+        font_medium.render(f"Signal: {simulation.phase}", True, WHITE),
+        (30, 88)
+    )
+    screen.blit(
+        font_medium.render(f"Vehicles: {len(simulation.vehicles)}", True, WHITE),
+        (30, 116)
+    )
+    screen.blit(
+        font_medium.render(f"Vehicles passed: {simulation.total_passed}", True, WHITE),
+        (30, 144)
+    )
+    screen.blit(
+        font_medium.render(f"Simulation time: {int(simulation.elapsed)} s", True, WHITE),
+        (30, 172)
+    )
+
+
+def draw_queue_panel(simulation):
+    panel = pygame.Rect(WIDTH - 245, 15, 230, 175)
+    pygame.draw.rect(screen, DARK, panel, border_radius=12)
+
+    screen.blit(
+        font_medium.render("TRAFFIC QUEUES", True, YELLOW),
+        (WIDTH - 230, 27)
+    )
+
+    for index, direction in enumerate(("N", "S", "E", "W")):
+        text = f"{direction}: {simulation.queues[direction]} vehicles"
+        screen.blit(
+            font_medium.render(text, True, WHITE),
+            (WIDTH - 230, 60 + index * 29)
         )
 
-    # Stop lines on each approach
-    pygame.draw.line(
-        screen, WHITE,
-        (CX - ROAD_W // 2, CY - ROAD_W // 2 - 22),
-        (CX - 15, CY - ROAD_W // 2 - 22), 4
-    )
-    pygame.draw.line(
-        screen, WHITE,
-        (CX + 15, CY + ROAD_W // 2 + 22),
-        (CX + ROAD_W // 2, CY + ROAD_W // 2 + 22), 4
-    )
-    pygame.draw.line(
-        screen, WHITE,
-        (CX - ROAD_W // 2 - 22, CY - ROAD_W // 2),
-        (CX - ROAD_W // 2 - 22, CY - 15), 4
-    )
-    pygame.draw.line(
-        screen, WHITE,
-        (CX + ROAD_W // 2 + 22, CY + 15),
-        (CX + ROAD_W // 2 + 22, CY + ROAD_W // 2), 4
-    )
 
+def draw_controls(simulation):
+    panel = pygame.Rect(15, HEIGHT - 82, WIDTH - 30, 65)
+    pygame.draw.rect(screen, DARK, panel, border_radius=10)
 
-def draw_signal(x, y, group):
-    pygame.draw.rect(
-        screen, BLACK,
-        (x, y, 46, 112),
-        border_radius=8
-    )
-
-    if phase.startswith("ALL_RED"):
-        red_on = True
-        yellow_on = False
-        green_on = False
-    else:
-        red_on = not phase.startswith(group + "_")
-        yellow_on = phase == group + "_YELLOW"
-        green_on = phase == group + "_GREEN"
-
-    lamps = [
-        (RED, red_on),
-        (YELLOW, yellow_on),
-        (GREEN, green_on),
+    controls = [
+        "SPACE: Pause",
+        "E: Emergency",
+        "F: Fixed-time",
+        "A: Adaptive",
+        "R: Reset",
+        "ESC: Exit"
     ]
 
-    for i, (color, active) in enumerate(lamps):
-        pygame.draw.circle(
-            screen,
-            color if active else (70, 73, 80),
-            (x + 23, y + 19 + i * 36),
-            12
-        )
+    x = 28
+    for item in controls:
+        rendered = font_small.render(item, True, WHITE)
+        screen.blit(rendered, (x, HEIGHT - 57))
+        x += rendered.get_width() + 24
 
 
-def draw_signals():
-    draw_signal(CX - ROAD_W // 2 - 64, CY - ROAD_W // 2 - 100, "NS")
-    draw_signal(CX + ROAD_W // 2 + 18, CY + ROAD_W // 2 - 12, "EW")
-
-
-def draw_vehicles():
-    for car in cars:
-        x, y = vehicle_position(car)
-        color = ORANGE if car["emergency"] else BLUE
-
-        if car["direction"] in ("N", "S"):
-            rect = pygame.Rect(x - 12, y - 18, 24, 36)
-        else:
-            rect = pygame.Rect(x - 18, y - 12, 36, 24)
-
-        pygame.draw.rect(screen, color, rect, border_radius=5)
-
-        if car["emergency"]:
-            pygame.draw.circle(screen, WHITE, (x, y), 4)
-            draw_text("E", x - 5, y - 31, 15, WHITE)
-
-
-def draw_dashboard():
-    pygame.draw.rect(screen, PANEL, (0, 0, WIDTH, 94))
-
-    draw_text("SMARTFLOW AI", 18, 10, 27)
-    draw_text("Intelligent Traffic Simulation", 18, 48, 16, GREY)
-
-    draw_text(f"Mode: {mode}", 340, 12, 18)
-    draw_text(f"Time: {sim_time:.1f}s", 340, 48, 17)
-
-    draw_text(f"Vehicles: {len(cars)}", 535, 12, 17)
-    draw_text(f"Completed: {completed}", 535, 48, 17)
-
-    draw_text(f"Emergency served: {emergency_served}", 735, 12, 16)
-    draw_text(f"Speed: {speed}x", 735, 48, 17)
-
-    status = "PAUSED" if paused else "RUNNING"
-    draw_text(status, 970, 14, 17, YELLOW)
-
-    avg_wait = total_wait / wait_samples if wait_samples else 0.0
-    draw_text(
-        f"Average sampled wait: {avg_wait:.2f}s",
-        20, HEIGHT - 50, 17
+def draw_phase_indicator(simulation):
+    text = font_medium.render(
+        f"Current phase: {simulation.phase}", True, WHITE
     )
-    draw_text(
-        "SPACE Pause | R Reset | 1 Fixed | 2 AI Demo | UP/DOWN Speed | E Test ambulance | ESC Quit",
-        20, HEIGHT - 25, 15
-    )
+    rect = text.get_rect(center=(CENTER_X, 24))
+    pygame.draw.rect(screen, DARK, rect.inflate(24, 14), border_radius=8)
+    screen.blit(text, rect)
 
+
+# ============================================================
+# MAIN PROGRAM
+# ============================================================
 
 def main():
-    global paused, mode, speed, sim_time
-
+    simulation = TrafficSimulation()
     running = True
 
     while running:
-        real_dt = clock.tick(FPS) / 1000.0
-        dt = min(real_dt, 0.05) * speed
+        dt = min(clock.tick(FPS) / 1000.0, 0.05)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -453,39 +525,50 @@ def main():
                     running = False
 
                 elif event.key == pygame.K_SPACE:
-                    paused = not paused
-
-                elif event.key == pygame.K_r:
-                    reset()
-
-                elif event.key == pygame.K_1:
-                    mode = "Fixed"
-
-                elif event.key == pygame.K_2:
-                    mode = "AI Demo"
-
-                elif event.key == pygame.K_UP:
-                    speed = min(4, speed + 1)
-
-                elif event.key == pygame.K_DOWN:
-                    speed = max(1, speed - 1)
+                    simulation.paused = not simulation.paused
 
                 elif event.key == pygame.K_e:
-                    # Deterministic emergency test vehicle.
-                    spawn_car(
-                        direction=random.choice(["N", "S", "E", "W"]),
-                        emergency=True
-                    )
+                    simulation.request_emergency()
 
-        if not paused:
-            sim_time += dt
-            update_signal(dt)
-            update_vehicles(dt)
+                elif event.key == pygame.K_f:
+                    simulation.fixed_mode = True
+                    simulation.phase = "NS_GREEN"
+                    simulation.phase_timer = 0.0
+                    simulation.last_green_was_ns = True
+
+                elif event.key == pygame.K_a:
+                    simulation.fixed_mode = False
+                    simulation.phase = "NS_GREEN"
+                    simulation.phase_timer = 0.0
+                    simulation.last_green_was_ns = True
+
+                elif event.key == pygame.K_r:
+                    simulation.reset()
+
+        simulation.update(dt)
 
         draw_road()
-        draw_signals()
-        draw_vehicles()
-        draw_dashboard()
+
+        # Traffic lights around the junction
+        draw_signal(CENTER_X - 165, CENTER_Y - 180, "N", simulation)
+        draw_signal(CENTER_X + 125, CENTER_Y + 65, "S", simulation)
+        draw_signal(CENTER_X + 135, CENTER_Y - 180, "E", simulation)
+        draw_signal(CENTER_X - 180, CENTER_Y + 65, "W", simulation)
+
+        for vehicle in simulation.vehicles:
+            vehicle.draw(screen)
+
+        draw_dashboard(simulation)
+        draw_queue_panel(simulation)
+        draw_phase_indicator(simulation)
+        draw_controls(simulation)
+
+        if simulation.paused:
+            pause_text = font_title.render("SIMULATION PAUSED", True, YELLOW)
+            screen.blit(
+                pause_text,
+                pause_text.get_rect(center=(CENTER_X, HEIGHT - 115))
+            )
 
         pygame.display.flip()
 
